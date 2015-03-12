@@ -59,7 +59,7 @@ require "digest/sha2"
 # See http://aws.amazon.com/iam/ for more details on setting up AWS identities.
 #
 class LogStash::Outputs::SQS < LogStash::Outputs::Base
-  include LogStash::PluginMixins::AwsConfig
+  include LogStash::PluginMixins::AwsConfig::V2
   include Stud::Buffer
 
   config_name "sqs"
@@ -80,7 +80,7 @@ class LogStash::Outputs::SQS < LogStash::Outputs::Base
   public
   def aws_service_endpoint(region)
     return {
-        :sqs_endpoint => "sqs.#{region}.amazonaws.com"
+        :region => region
     }
   end
 
@@ -88,7 +88,7 @@ class LogStash::Outputs::SQS < LogStash::Outputs::Base
   def register
     require "aws-sdk"
 
-    @sqs = AWS::SQS.new(aws_options_hash)
+    @sqs = Aws::SQS::Client.new(aws_options_hash)
 
     if @batch
       if @batch_events > 10
@@ -109,7 +109,7 @@ class LogStash::Outputs::SQS < LogStash::Outputs::Base
 
     begin
       @logger.debug("Connecting to AWS SQS queue '#{@queue}'...")
-      @sqs_queue = @sqs.queues.named(@queue)
+      @queue_url = @sqs.get_queue_url(:queue_name => @queue)[:queue_url]
       @logger.info("Connected to AWS SQS queue '#{@queue}' successfully.")
     rescue Exception => e
       @logger.error("Unable to access SQS queue '#{@queue}': #{e.to_s}")
@@ -122,18 +122,22 @@ class LogStash::Outputs::SQS < LogStash::Outputs::Base
       buffer_receive(event.to_json)
       return
     end
-    @sqs_queue.send_message(event.to_json)
+    @sqs.send_message(queue_url: @queue_url, message_body: event.to_json)
   end # def receive
 
   # called from Stud::Buffer#buffer_flush when there are events to flush
   def flush(events, teardown=false)
-    @sqs_queue.batch_send(events)
+    entries = Array.new()
+    events.each_with_index do |event, index|
+      entries.push(:id => index.to_s, :message_body => event)
+    end
+    @sqs.send_message_batch(:queue_url => @queue_url, :entries => entries)
   end
 
   public
   def teardown
     buffer_flush(:final => true)
-    @sqs_queue = nil
+    @sqs = nil
     finished
   end # def teardown
 end
