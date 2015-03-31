@@ -127,7 +127,6 @@ class LogStash::Outputs::SQS < LogStash::Outputs::Base
     message_body = event.to_json
     if message_body.bytesize > @message_max_size
       @logger.warn("Message exceeds max length and will be dropped. Max Bytes: #{@message_max_size}, Total Bytes: #{message_body.bytesize}.")
-      event.cancel
       return
     end
 
