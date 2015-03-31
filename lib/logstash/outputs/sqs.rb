@@ -143,7 +143,24 @@ class LogStash::Outputs::SQS < LogStash::Outputs::Base
 
   # called from Stud::Buffer#buffer_flush when there are events to flush
   def flush(events, teardown=false)
-    @sqs_queue.batch_send(events)
+    queue = []
+    bytes = 0
+
+    # breakdown queue so calls to sqs does not exceed a total payload of 256 kb
+    events.each do |message_body|
+      if (bytes + message_body.bytesize) > (256 * 1024)
+        @sqs_queue.batch_send(queue)
+        queue = []
+        bytes = 0
+      else
+        queue << message_body
+        bytes += message_body.bytesize
+      end
+    end
+
+    if queue.length > 0
+      @sqs_queue.batch_send(queue)
+    end
   end
 
   # called from Stud::Buffer#buffer_flush when there are errors while flushing
