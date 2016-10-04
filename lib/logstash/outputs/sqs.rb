@@ -76,6 +76,12 @@ class LogStash::Outputs::SQS < LogStash::Outputs::Base
   # If `batch` is set to true, the maximum amount of time between `batch_send` commands when there are pending events to flush.
   config :batch_timeout, :validate => :number, :default => 5
 
+  # The maximum number of bytes for any message sent to SQS. Messages exceeding this value will get truncated.
+  config :message_max_size, :validate => :number, :default => (256 * 1024)
+
+  # If true the logstash will give up if SQS throws an exception. Default is to retry ad infinum.
+  config :stop_on_fail, :validate => :boolean, :default => false
+
   public
   def aws_service_endpoint(region)
     return {
@@ -117,16 +123,50 @@ class LogStash::Outputs::SQS < LogStash::Outputs::Base
 
   public
   def receive(event)
-    if @batch
-      buffer_receive(event.to_json)
+    message_body = event.to_json
+    if message_body.bytesize > @message_max_size
+      @logger.warn("Message exceeds max length and will be dropped. Max Bytes: #{@message_max_size}, Total Bytes: #{message_body.bytesize}.")
       return
     end
-    @sqs_queue.send_message(event.to_json)
+
+    begin
+      if @batch
+        buffer_receive(message_body)
+        return
+      end
+      @sqs_queue.send_message(message_body)
+    rescue Exception => e
+      @logger.error("Unable to log message '#{@message_body}': #{e.to_s}")
+    end
   end # def receive
 
   # called from Stud::Buffer#buffer_flush when there are events to flush
   def flush(events, close=false)
-    @sqs_queue.batch_send(events)
+    queue = []
+    bytes = 0
+
+    # breakdown queue so calls to sqs does not exceed a total payload of 256 kb
+    events.each do |message_body|
+      if (bytes + message_body.bytesize) > (256 * 1024)
+        @sqs_queue.batch_send(queue)
+        queue = []
+        bytes = 0
+      else
+        queue << message_body
+        bytes += message_body.bytesize
+      end
+    end
+
+    if queue.length > 0
+      @sqs_queue.batch_send(queue)
+    end
+  end
+
+  # called from Stud::Buffer#buffer_flush when there are errors while flushing
+  def on_flush_error(error)
+    if (@stop_on_fail)
+      raise error
+    end
   end
 
   public
