@@ -1,3 +1,6 @@
+## 3.2.0
+- Added dynamic batching. Messages will be split into small-enough batches in order to ensure that the total batch size is less than 256KiB.
+
 ## 3.1.0
 - Update the AWS SDK to version 2.
 

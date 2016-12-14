@@ -71,6 +71,10 @@ class LogStash::Outputs::SQS < LogStash::Outputs::Base
   # `true`.
   config :batch_timeout, :validate => :number, :default => 5
 
+  # The maximum number of bytes for any message sent to SQS. Messages exceeding
+  # this size will be dropped.
+  config :message_max_size, :validate => :bytes, :default => '256KiB'
+
   # The name of the SQS queue to push messages into.
   config :queue, :validate => :string, :required => true
 
@@ -106,25 +110,62 @@ class LogStash::Outputs::SQS < LogStash::Outputs::Base
 
   public
   def receive(event)
+    message = event.to_json
+
+    if message.bytesize > @message_max_size
+      @logger.warn('Message exceeds maximum length and will be dropped', { :message_size => message.bytesize })
+      return
+    end
+
     if @batch
-      buffer_receive(event.to_json)
+      buffer_receive(message)
     else
-      @sqs.send_message(queue_url: @queue_url, message_body: event.to_json)
+      @sqs.send_message(queue_url: @queue_url, message_body: message)
     end
   end
 
   # Called from `Stud::Buffer#buffer_flush` when there are events to flush.
   def flush(events, close=false)
-    entries = Array.new()
-    events.each_with_index do |event, index|
-      entries.push(:id => index.to_s, :message_body => event)
+    bytes = 0
+    queue = []
+
+    # Split the events into multiple batches to ensure that a single batch does
+    # not exceed `@message_max_size`.
+    #
+    # TODO: We can probably do this more effectively. The current
+    # implementation simply ensures that the batch size is less than some
+    # threshold, but does not ensure that batch size itself is maximized.
+    # Maximizing the size of each batch would minimize the number of batch
+    # sends that need to be performed.
+    events.each do |event|
+      if (bytes + event.bytesize) > @message_max_size
+        send_message_batch(queue)
+        bytes = 0
+        queue = []
+      end
+
+      queue << event
+      bytes += event.bytesize
     end
 
-    @sqs.send_message_batch(:queue_url => @queue_url, :entries => entries)
+    send_message_batch(queue)
   end
 
   public
   def close
     buffer_flush(:final => true)
+  end
+
+  private
+  def send_message_batch(events)
+    return unless events.size > 0
+
+    entries = events.each_with_index.map do |event, index|
+      { :id => index.to_s, :message_body => event }
+    end
+
+    # TODO: We should possibly call `#send_message` instead of
+    # `#send_message_batch` if `entries.size == 1`.
+    @sqs.send_message_batch(:queue_url => @queue_url, :entries => entries)
   end
 end

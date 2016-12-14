@@ -156,6 +156,56 @@ describe LogStash::Outputs::SQS do
         subject.close
       end
     end
+
+    context 'with large payload' do
+      let(:config) { super.merge({ 'batch' => false, 'message_max_size' => message_max_size }) }
+      let(:message_max_size) { 1024 }
+
+      it 'should drop event' do
+        event = LogStash::Event.new({ 'message' => '.' * message_max_size })
+        expect(mock_sqs).not_to receive(:send_message)
+        subject.receive(event)
+      end
+    end
+
+    context 'with large batch' do
+      let(:config) { super.merge({ 'batch' => true, 'batch_events' => 4, 'message_max_size' => message_max_size }) }
+      let(:message_max_size) { 1024 }
+      let(:overhead) { 69 }
+
+      it 'should split into smaller batches' do
+        events = [
+          LogStash::Event.new({ 'message' => 'a' * (0.6 * message_max_size - overhead) }),
+          LogStash::Event.new({ 'message' => 'b' * (0.5 * message_max_size - overhead) }),
+          LogStash::Event.new({ 'message' => 'c' * (0.5 * message_max_size - overhead) }),
+          LogStash::Event.new({ 'message' => 'd' * (0.4 * message_max_size - overhead) }),
+        ]
+
+        batches = [
+          [
+            { :id => '0', :message_body => events[0].to_json },
+          ],
+          [
+            { :id => '0', :message_body => events[1].to_json },
+            { :id => '1', :message_body => events[2].to_json },
+          ],
+          [
+            { :id => '0', :message_body => events[3].to_json },
+          ],
+        ]
+
+        batches.each do |entries|
+          expect(mock_sqs).to receive(:send_message_batch).with({ :queue_url => queue_url, :entries => entries }).once
+        end
+
+        events.each do |event|
+          subject.receive(event)
+        end
+
+        # We must call `close` to ensure that buffered messages have been flushed.
+        subject.close
+      end
+    end
   end
 
   describe '#close' do
