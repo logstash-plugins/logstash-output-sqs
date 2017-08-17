@@ -1,3 +1,6 @@
+## 4.0.2
+  - Docs fixes
+
 ## 4.0.1
   - Docs: Fix doc generation issue by removing extraneous comments.
 
