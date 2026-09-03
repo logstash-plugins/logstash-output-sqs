@@ -1,6 +1,7 @@
 # encoding: utf-8
 
 require 'aws-sdk'
+require 'securerandom'
 require 'logstash/errors'
 require 'logstash/namespace'
 require 'logstash/outputs/base'
@@ -82,6 +83,18 @@ class LogStash::Outputs::SQS < LogStash::Outputs::Base
   # queue, not the URL or ARN.
   config :queue, :validate => :string, :required => true
 
+  # The message de-duplication id.
+  # If a message with a particular MessageDeduplicationId is sent successfully, any messages sent with the same
+  # de-duplication id are accepted successfully but aren't delivered during the 5-minute deduplication interval.
+  # This parameter applies only to FIFO (first-in-first-out) queues.
+  config :message_deduplication_id, :validate => :string, :required => false
+  
+  # The message group id.
+  # The tag that specifies that a message belongs to a specific message group. Messages that belong to the same
+  # message group are processed in a FIFO manner
+  # This parameter applies only to FIFO (first-in-first-out) queues.
+  config :message_group_id, :validate => :string, :required => false, :default => 'default'
+
   # Account ID of the AWS account which owns the queue. Note IAM permissions
   # need to be configured on both accounts to function.
   config :queue_owner_aws_account_id, :validate => :string, :required => false
@@ -141,9 +154,14 @@ class LogStash::Outputs::SQS < LogStash::Outputs::Base
       end
 
       bytes += encoded.bytesize
-      entries.push(:id => index.to_s, :message_body => encoded)
+      if @queue.include? ".fifo"
+        @message_deduplication_id = SecureRandom.uuid if @message_deduplication_id.nil? || @message_deduplication_id.empty?
+        entries.push(:id => index.to_s, :message_body => encoded, :message_group_id => @message_group_id, :message_deduplication_id => @message_deduplication_id)
+      else
+        entries.push(:id => index.to_s, :message_body => encoded)
+      end
     end
-
+    
     send_message_batch(entries) unless entries.empty?
   end
 
@@ -157,7 +175,13 @@ class LogStash::Outputs::SQS < LogStash::Outputs::Base
         next
       end
 
-      @sqs.send_message(:queue_url => @queue_url, :message_body => encoded)
+      @logger.debug("Publishing one message to SQS", :queue_url => @queue_url, :event => event)
+      if @queue.include? ".fifo"
+        @message_deduplication_id = SecureRandom.uuid if @message_deduplication_id.nil? || @message_deduplication_id.empty?
+        @sqs.send_message(:queue_url => @queue_url, :message_body => encoded, :message_group_id => @message_group_id, :message_deduplication_id => @message_deduplication_id)
+      else
+        @sqs.send_message(:queue_url => @queue_url, :message_body => encoded)
+      end
     end
   end
 
